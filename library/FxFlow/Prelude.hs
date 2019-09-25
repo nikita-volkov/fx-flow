@@ -109,3 +109,13 @@ import Data.Semigroupoid as Exports
 -- fx
 -------------------------
 import Fx as Exports (Uio, Eio, Provider, Accessor, Process)
+
+-- stm
+-------------------------
+import Control.Concurrent.STM as Exports
+
+-- profunctors
+-------------------------
+import Data.Profunctor.Unsafe as Exports
+import Data.Profunctor.Choice as Exports
+import Data.Profunctor.Strong as Exports

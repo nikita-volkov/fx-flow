@@ -28,5 +28,7 @@ library
     base,
     fx,
     mtl,
+    profunctors,
     semigroupoids,
+    stm,
     transformers

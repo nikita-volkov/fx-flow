@@ -11,8 +11,12 @@ import qualified Fx
 {-|
 Block running a flow until an async exception gets raised or the actor system fails with an error.
 -}
-flow :: Spawner env err (Flow () ()) -> Accessor env (Either SomeAsyncException err) ()
-flow = error "TODO"
+spawn :: Spawner env err (Flow () ()) -> Accessor env (Either SomeException err) ()
+spawn (Spawner (ReaderT envFn)) = do
+  errChan <- Fx.mapErr Left $ Fx.io $ newTQueueIO
+  Fx.mapErr Left $ Fx.use $ \ env -> Fx.io $ envFn (env, errChan)
+  err <- Fx.mapErr Left $ Fx.io $ atomically $ readTQueue errChan
+  throwError err
 
 
 -- * Spawner
@@ -21,20 +25,65 @@ flow = error "TODO"
 {-|
 Context for spawning of actors.
 -}
-data Spawner env err a
+data Spawner env err a = Spawner (ReaderT (env, TQueue (Either SomeException err)) IO a)
 
 {-|
 Spawn an actor.
 -}
-spawn :: (i -> Accessor env err o) -> Spawner env err (Flow i o)
-spawn = error "TODO"
+act :: Int -> (i -> Accessor env err o) -> Spawner env err (Flow i o)
+act queueSize step = Spawner $ ReaderT $ \ (env, errChan) -> do
+  queue <- newTBQueueIO (fromIntegral queueSize)
+  forkIO $ forever $ do
+    (i, cont) <- atomically $ readTBQueue queue
+    o <- error "TODO"
+    cont o
+  return $ Flow $ \ i cont -> atomically $ writeTBQueue queue (i, cont)
 
 
 -- * Flow
 -------------------------
 
 {-|
-Composable message flow.
-Abstraction over the connection of actors.
+Actor communication network composition.
+Specifies the message flow between them.
 -}
-data Flow i o
+newtype Flow i o = Flow (i -> (o -> IO ()) -> IO ())
+
+instance Category Flow where
+  id = Flow $ \ inp cont -> cont inp
+  (.) (Flow def1) (Flow def2) = Flow $ \ i cont -> def2 i (flip def1 cont)
+
+instance Arrow Flow where
+  arr fn = Flow $ \ inp cont -> cont (fn inp)
+  (***) (Flow def1) (Flow def2) = Flow $ \ (inp1, inp2) cont -> do
+    out1Var <- newTVarIO Nothing
+    out2Var <- newTVarIO Nothing
+    def1 inp1 $ \ out1 -> join $ atomically $ do
+      out2Setting <- readTVar out2Var
+      case out2Setting of
+        Just out2 -> return $ cont (out1, out2)
+        Nothing -> do
+          writeTVar out1Var (Just out1)
+          return (return ())
+    def2 inp2 $ \ out2 -> join $ atomically $ do
+      out1Setting <- readTVar out1Var
+      case out1Setting of
+        Just out1 -> return $ cont (out1, out2)
+        Nothing -> do
+          writeTVar out2Var (Just out2)
+          return (return ())
+
+instance ArrowChoice Flow where
+  left = left'
+
+instance Profunctor Flow where
+  dimap fn1 fn2 (Flow def) = Flow $ \ i cont -> def (fn1 i) (cont . fn2)
+
+instance Strong Flow where
+  first' = (*** id)
+  second' = (id ***)
+
+instance Choice Flow where
+  left' (Flow def) = Flow $ \ i cont -> case i of
+    Left i -> def i (cont . Left)
+    Right i -> cont (Right i)

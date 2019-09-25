@@ -12,10 +12,11 @@ import qualified Fx
 Block running a flow until an async exception gets raised or the actor system fails with an error.
 -}
 spawn :: Spawner env err (Flow () ()) -> Accessor env (Either SomeException err) ()
-spawn (Spawner (ReaderT envFn)) = do
+spawn (Spawner def) = do
   errChan <- Fx.mapErr Left $ Fx.io $ newTQueueIO
-  Fx.mapErr Left $ Fx.use $ \ env -> Fx.io $ envFn (env, errChan)
+  (flow, killers) <- Fx.mapErr Left $ Fx.use $ \ env -> Fx.io $ runStateT (runReaderT def (env, errChan)) []
   err <- Fx.mapErr Left $ Fx.io $ atomically $ readTQueue errChan
+  Fx.mapErr Left $ Fx.io $ fold killers
   throwError err
 
 
@@ -25,19 +26,26 @@ spawn (Spawner (ReaderT envFn)) = do
 {-|
 Context for spawning of actors.
 -}
-data Spawner env err a = Spawner (ReaderT (env, TQueue (Either SomeException err)) IO a)
+data Spawner env err a = Spawner (ReaderT (env, TQueue (Either SomeException err)) (StateT [IO ()] IO) a)
 
 {-|
 Spawn an actor.
 -}
 act :: Int -> (i -> Accessor env err o) -> Spawner env err (Flow i o)
-act queueSize step = Spawner $ ReaderT $ \ (env, errChan) -> do
+act queueSize step = Spawner $ ReaderT $ \ (env, errChan) -> StateT $ \ killers -> do
   queue <- newTBQueueIO (fromIntegral queueSize)
-  forkIO $ forever $ do
-    (i, cont) <- atomically $ readTBQueue queue
-    o <- error "TODO"
-    cont o
-  return $ Flow $ \ i cont -> atomically $ writeTBQueue queue (i, cont)
+  forkIO $ fix $ \ loop -> do
+    entry <- atomically $ readTBQueue queue
+    case entry of
+      Just (i, cont) -> do
+        o <- error "TODO"
+        cont o
+        loop
+      Nothing -> return ()
+  let
+    flow = Flow $ \ i cont -> atomically $ writeTBQueue queue (Just (i, cont))
+    newKillers = (atomically (writeTBQueue queue Nothing)) : killers
+    in return (flow, newKillers)
 
 
 -- * Flow

@@ -73,15 +73,18 @@ newtype Spawner env err a = Spawner (ReaderT (env, Either SomeException err -> I
 Spawn an actor.
 -}
 act :: Int -> (i -> Accessor env err o) -> Spawner env err (Flow i o)
-act queueSize step = Spawner $ ReaderT $ \ (env, sendErr) -> StateT $ \ killers -> do
+act queueSize step = Spawner $ ReaderT $ \ (env, emitErr) -> StateT $ \ killers -> do
   queue <- newTBQueueIO (fromIntegral queueSize)
   forkIO $ fix $ \ loop -> do
     entry <- atomically $ readTBQueue queue
     case entry of
       Just (i, cont) -> do
-        o <- error "TODO"
-        cont o
-        loop
+        errOrOut <- Fx.uio $ runExceptT $ Fx.eio $ Fx.providerAndAccessor (pure env) $ step i
+        case errOrOut of
+          Right out -> do
+            cont out
+            loop
+          Left err -> emitErr (Right err)
       Nothing -> return ()
   let
     flow = Flow $ \ i cont -> atomically $ writeTBQueue queue (Just (i, cont))

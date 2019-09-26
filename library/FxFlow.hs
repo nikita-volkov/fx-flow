@@ -4,7 +4,7 @@ module FxFlow
   spawn,
   -- * Spawner
   Spawner,
-  act,
+  react,
   -- * Flow
   Flow,
 )
@@ -77,12 +77,13 @@ Context for spawning of actors.
 -}
 newtype Spawner env err a = Spawner (ReaderT (env, Either SomeException err -> IO ()) (StateT [IO ()] IO) a)
   deriving (Functor, Applicative, Monad)
-  
+
 {-|
-Spawn an actor.
+Spawn a reactor with an input message buffer of size limited to the specified size,
+producing a flow, which outputs results.
 -}
-act :: Int -> (i -> Accessor env err o) -> Spawner env err (Flow i o)
-act queueSize step = Spawner $ ReaderT $ \ (env, emitErr) -> StateT $ \ killers -> do
+react :: Int -> (i -> Accessor env err o) -> Spawner env err (Flow i o)
+react queueSize step = Spawner $ ReaderT $ \ (env, emitErr) -> StateT $ \ killers -> do
   queue <- newTBQueueIO (fromIntegral queueSize)
   forkIO $ fix $ \ loop -> do
     entry <- atomically $ readTBQueue queue

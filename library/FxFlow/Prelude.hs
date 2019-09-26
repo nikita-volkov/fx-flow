@@ -13,7 +13,7 @@ where
 -- base
 -------------------------
 import Control.Applicative as Exports
-import Control.Arrow as Exports hiding (first, second)
+import Control.Arrow as Exports
 import Control.Category as Exports
 import Control.Concurrent as Exports
 import Control.Exception as Exports
@@ -22,7 +22,7 @@ import Control.Monad.IO.Class as Exports
 import Control.Monad.Fail as Exports
 import Control.Monad.Fix as Exports hiding (fix)
 import Control.Monad.ST as Exports
-import Data.Bifunctor as Exports
+import Data.Bifunctor as Exports hiding (first, second)
 import Data.Bits as Exports
 import Data.Bool as Exports
 import Data.Char as Exports
@@ -100,7 +100,7 @@ import Control.Monad.Writer.Class as Exports
 
 -- semigroupoids
 -------------------------
-import Data.Bifunctor.Apply as Exports
+import Data.Bifunctor.Apply as Exports hiding (Bifunctor(..))
 import Data.Functor.Alt as Exports hiding (($>), many, some, optional)
 import Data.Functor.Apply as Exports hiding (($>))
 import Data.Functor.Bind as Exports hiding (join, ($>))
@@ -130,9 +130,11 @@ import Data.Profunctor.Strong as Exports
 -- * Synonyms for better naming
 -------------------------
 
+import qualified Data.Bifunctor as Bifunctor
+
 map = fmap
-bimap1 = first
-bimap2 = second
+bimap1 = Bifunctor.first
+bimap2 = Bifunctor.second
 promap1 = lmap
 promap2 = rmap
 promap = dimap

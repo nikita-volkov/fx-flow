@@ -13,10 +13,12 @@ Block running a flow until an async exception gets raised or the actor system fa
 -}
 spawn :: Spawner env err (Flow () ()) -> Accessor env (Either SomeException err) ()
 spawn (Spawner def) = do
-  errChan <- Fx.mapErr Left $ Fx.io $ newTQueueIO
-  (flow, killers) <- Fx.mapErr Left $ Fx.use $ \ env -> Fx.io $ runStateT (runReaderT def (env, errChan)) []
-  err <- Fx.mapErr Left $ Fx.io $ atomically $ readTQueue errChan
-  Fx.mapErr Left $ Fx.io $ fold killers
+  err <- Fx.use $ \ env -> first Left $ Fx.io $ do
+    errChan <- newTQueueIO
+    (flow, killers) <- runStateT (runReaderT def (env, errChan)) []
+    err <- atomically $ readTQueue errChan
+    fold killers
+    return err
   throwError err
 
 

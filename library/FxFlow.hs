@@ -1,4 +1,13 @@
 module FxFlow
+(
+  -- * Accessor
+  spawn,
+  -- * Spawner
+  Spawner,
+  act,
+  -- * Flow
+  Flow,
+)
 where
 
 import FxFlow.Prelude

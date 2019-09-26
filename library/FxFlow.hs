@@ -26,8 +26,9 @@ spawn (Spawner def) = do
 {-|
 Context for spawning of actors.
 -}
-data Spawner env err a = Spawner (ReaderT (env, TQueue (Either SomeException err)) (StateT [IO ()] IO) a)
-
+newtype Spawner env err a = Spawner (ReaderT (env, TQueue (Either SomeException err)) (StateT [IO ()] IO) a)
+  deriving (Functor, Applicative, Monad)
+  
 {-|
 Spawn an actor.
 -}

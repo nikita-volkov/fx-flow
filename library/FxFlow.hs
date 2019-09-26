@@ -135,6 +135,8 @@ instance Arrow Flow where
         Nothing -> do
           writeTVar out2Var (Just out2)
           return (return ())
+  first = first'
+  second = second'
 
 instance ArrowChoice Flow where
   left = left'
@@ -143,8 +145,7 @@ instance Profunctor Flow where
   dimap fn1 fn2 (Flow def) = Flow $ \ i cont -> def (fn1 i) (cont . fn2)
 
 instance Strong Flow where
-  first' = (*** id)
-  second' = (id ***)
+  first' (Flow flowIo) = Flow $ \ (inp1, inp2) cont -> flowIo inp1 $ \ out1 -> cont (out1, inp2)
 
 instance Choice Flow where
   left' (Flow def) = Flow $ \ i cont -> case i of

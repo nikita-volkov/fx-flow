@@ -7,7 +7,7 @@ module FxFlow
   react,
   -- * Flow
   Flow,
-  infinitely,
+  permanently,
 )
 where
 
@@ -159,5 +159,5 @@ This is a tool for creating permanent processes,
 which never stop themselves and
 can only be stopped due to errors or user interruption (thru async exception).
 -}
-infinitely :: Flow i () -> Flow i Void
-infinitely (Flow flowIo) = Flow $ \ i _ -> flowIo i (const (return ()))
+permanently :: Flow i () -> Flow i Void
+permanently (Flow flowIo) = Flow $ \ i _ -> flowIo i (const (return ()))

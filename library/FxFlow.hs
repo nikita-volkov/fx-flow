@@ -7,6 +7,7 @@ module FxFlow
   react,
   -- * Flow
   Flow,
+  infinitely,
 )
 where
 
@@ -149,3 +150,14 @@ instance Choice Flow where
   left' (Flow def) = Flow $ \ i cont -> case i of
     Left i -> def i (cont . Left)
     Right i -> cont (Right i)
+
+{-|
+Turn a flow, which produces unit into a flow,
+which only consumes input and never produces output.
+
+This is a tool for creating permanent processes,
+which never stop themselves and
+can only be stopped due to errors or user interruption (thru async exception).
+-}
+infinitely :: Flow i () -> Flow i Void
+infinitely (Flow flowIo) = Flow $ \ i _ -> flowIo i (const (return ()))

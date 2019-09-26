@@ -127,7 +127,7 @@ import Data.Profunctor.Choice as Exports
 import Data.Profunctor.Strong as Exports
 
 
--- * Synonyms for better naming
+-- Synonyms for better naming
 -------------------------
 
 import qualified Data.Bifunctor as Bifunctor

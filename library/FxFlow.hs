@@ -9,17 +9,55 @@ import qualified Fx
 -------------------------
 
 {-|
-Block running a flow until an async exception gets raised or the actor system fails with an error.
+Block running a network of actors until one of the following happens:
+
+- Flow produces the first output;
+- An @err@ error gets raised by anything involved;
+- An async exception gets raised. That's what `SomeException` stands for.
+
+The first parameter is an action,
+which gets executed in loop,
+each time producing an input for the network of actors,
+specified by `Flow`.
 -}
-spawn :: Spawner env err (Flow () ()) -> Accessor env (Either SomeException err) ()
-spawn (Spawner def) = do
-  err <- Fx.use $ \ env -> first Left $ Fx.io $ do
+spawn :: Accessor env err inp -> Spawner env err (Flow inp out) -> Accessor env (Either SomeException err) out
+spawn producer (Spawner def) = do
+
+  errOrRes <- Fx.use $ \ env -> bimap1 Left $ Fx.io $ do
     errChan <- newTQueueIO
-    (flow, killers) <- runStateT (runReaderT def (env, errChan)) []
-    err <- atomically $ readTQueue errChan
-    fold killers
-    return err
-  throwError err
+    let emitErr = atomically . writeTQueue errChan
+
+    -- Spawn all the flow workers:
+    (Flow emitInp, flowKillers) <- runStateT (runReaderT def (env, emitErr)) []
+
+    resVar <- newEmptyTMVarIO
+
+    -- Spawn the producer loop:
+    forkIO $ fix $ \ loop -> do
+
+      -- Check that we're not dead yet:
+      alive <- atomically $
+        (False <$ readTMVar resVar) <|>
+        (False <$ peekTQueue errChan) <|>
+        (pure True)
+
+      when alive $ do
+        errOrInp <- Fx.uio $ runExceptT $ Fx.eio $ Fx.providerAndAccessor (pure env) producer
+        case errOrInp of
+          Right inp -> do
+            emitInp inp $ \ out -> atomically $ putTMVar resVar out
+            loop
+          Left err -> emitErr (Right err)
+
+    -- Block waiting for error or result:
+    errOrRes <- atomically $ Right <$> readTMVar resVar <|> Left <$> peekTQueue errChan
+
+    -- Kill all forked threads:
+    fold flowKillers
+
+    return errOrRes
+
+  either throwError return errOrRes
 
 
 -- * Spawner
@@ -28,14 +66,14 @@ spawn (Spawner def) = do
 {-|
 Context for spawning of actors.
 -}
-newtype Spawner env err a = Spawner (ReaderT (env, TQueue (Either SomeException err)) (StateT [IO ()] IO) a)
+newtype Spawner env err a = Spawner (ReaderT (env, Either SomeException err -> IO ()) (StateT [IO ()] IO) a)
   deriving (Functor, Applicative, Monad)
   
 {-|
 Spawn an actor.
 -}
 act :: Int -> (i -> Accessor env err o) -> Spawner env err (Flow i o)
-act queueSize step = Spawner $ ReaderT $ \ (env, errChan) -> StateT $ \ killers -> do
+act queueSize step = Spawner $ ReaderT $ \ (env, sendErr) -> StateT $ \ killers -> do
   queue <- newTBQueueIO (fromIntegral queueSize)
   forkIO $ fix $ \ loop -> do
     entry <- atomically $ readTBQueue queue

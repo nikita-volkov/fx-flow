@@ -141,6 +141,14 @@ instance Arrow Flow where
 instance ArrowChoice Flow where
   left = left'
 
+instance ArrowZero Flow where
+  zeroArrow = Flow $ \ i cont -> return ()
+
+instance ArrowPlus Flow where
+  (<+>) (Flow flowIo1) (Flow flowIo2) = Flow $ \ i cont -> do
+    flowIo1 i cont
+    flowIo2 i cont
+
 instance Profunctor Flow where
   dimap fn1 fn2 (Flow def) = Flow $ \ i cont -> def (fn1 i) (cont . fn2)
 

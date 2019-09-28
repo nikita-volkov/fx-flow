@@ -68,16 +68,16 @@ react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ 
   forkIO $ fix $ \ loop -> do
     task <- atomically $ readTBQueue taskQueue
     case task of
-      Just (inp, cont) -> do
+      Just (inp, emit) -> do
         errOrOut <- Fx.uio $ runExceptT $ Fx.eio $ Fx.providerAndAccessor (pure env) $ step inp
         case errOrOut of
           Right out -> do
-            cont out
+            emit out
             loop
           Left err -> reportErr (Right err)
       Nothing -> return ()
   let
-    flow inp = Flow $ \ cont -> atomically $ writeTBQueue taskQueue (Just (inp, cont))
+    flow inp = Flow $ \ emit -> atomically $ writeTBQueue taskQueue (Just (inp, emit))
     newKillersState = atomically (writeTBQueue taskQueue Nothing) : killersState
     in return (flow, newKillersState)
 
@@ -126,7 +126,7 @@ instance Monad Flow where
   (>>=) (Flow reg1) k2 = Flow $ \ emit -> reg1 $ k2 >>> \ (Flow reg2) -> reg2 emit
 
 instance Alternative Flow where
-  empty = Flow (\ cont -> return ())
+  empty = Flow (\ emit -> return ())
   (<|>) (Flow reg1) (Flow reg2) = Flow $ \ emit -> reg1 emit *> reg2 emit
 
 instance MonadPlus Flow where

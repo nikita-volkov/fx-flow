@@ -12,41 +12,69 @@ where
 
 import FxFlow.Prelude
 import qualified Fx
+import qualified FxStreaming.Producer as Producer
 
 
--- * Accessor
+-- * Producer
 -------------------------
 
-{-|
-Block running a network of actors until one of the following happens:
+spawn :: (SomeException -> err) -> Producer env err inp -> Spawner env err (inp -> Flow out) -> Producer env err out
+spawn someExceptionErr (Producer inpEio) (Spawner flowReader) = Producer $ \ env stopOut emitOut -> do
 
-- Flow produces the first output;
-- An @err@ error gets raised by anything involved;
-- An async exception gets raised. That's what `SomeException` stands for.
--}
-spawn :: Spawner env err (Flow out) -> Accessor env (Either SomeException err) out
-spawn (Spawner reader) = do
+  result <- bimap1 someExceptionErr $ liftIO $ do
 
-  errOrRes <- Fx.use $ \ env -> bimap1 Left $ Fx.io $ do
-    
     outChan <- newTQueueIO
-    errChan <- newTQueueIO
+    finishedVar <- newTVarIO False
+    errVar <- newEmptyTMVarIO
+    let reportErr = atomically . void . tryPutTMVar errVar
 
     -- Spawn all the flow workers:
-    (Flow reg, flowKillers) <- runStateT (runReaderT reader (env, atomically . writeTQueue errChan)) []
+    (flowByInp, stopSignallers) <- runStateT (runReaderT flowReader (env, reportErr)) []
 
-    -- Register a callback, writing the result
-    atomically $ reg $ \ out -> writeTQueue outChan out
+    -- Spawn the producer:
+    forkIO $ do
+      producerResult <- let
+        stop = bimap1 someExceptionErr $ liftIO $ atomically (writeTVar finishedVar True)
+        emit inp = let
+          Flow reg = flowByInp inp
+          in do
+            pushingResult <- bimap1 someExceptionErr $ liftIO $ atomically $
+              (Just <$> readTMVar errVar) <|>
+              (Nothing <$ reg (writeTQueue outChan))
+            case pushingResult of
+              Just err -> throwError (either someExceptionErr id err)
+              Nothing -> return ()
+        in runExceptT (Fx.eio (inpEio env stop emit))
+      case producerResult of
+        Right () -> return ()
+        Left err -> reportErr (Right err)
+    return (outChan, finishedVar, errVar)
 
-    -- Block waiting for error or result:
-    errOrRes <- atomically $ Right <$> peekTQueue outChan <|> Left <$> peekTQueue errChan
+    -- Feed the consumer:
+    fix $ \ loop -> join $ atomically $ asum $
+      [
+        do
+          err <- readTMVar errVar
+          return (return (Left (either someExceptionErr id err)))
+        ,
+        do
+          out <- readTQueue outChan
+          return $ do
+            emissionResult <- runExceptT $ Fx.eio $ emitOut out
+            case emissionResult of
+              Right () -> loop
+              Left err -> return (Left err)
+        ,
+        do
+          finished <- readTVar finishedVar
+          if finished
+            then return $ do
+              mconcat stopSignallers
+              runExceptT $ Fx.eio $ stopOut
+            else retry
+      ]
 
-    -- Kill all forked threads:
-    fold flowKillers
-
-    return errOrRes
-
-  either throwError return errOrRes
+  either throwError return result
 
 
 -- * Spawner

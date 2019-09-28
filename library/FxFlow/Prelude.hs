@@ -116,6 +116,10 @@ import Data.Semigroupoid as Exports
 -------------------------
 import Fx as Exports (Uio, Eio, Provider, Accessor, Process)
 
+-- fx-streaming
+-------------------------
+import FxStreaming.Producer as Exports (Producer(..))
+
 -- stm
 -------------------------
 import Control.Concurrent.STM as Exports

@@ -63,8 +63,9 @@ Spawn a reactor with an input message buffer of size limited to the specified si
 producing a flow, which outputs results.
 -}
 react :: Int -> (inp -> Accessor env err out) -> Spawner env err (inp -> Flow out)
-react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ killersState -> do
+react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ priorKillers -> do
   taskQueue <- newTBQueueIO (fromIntegral taskQueueSize)
+  deathLockVar <- newEmptyMVar
   forkIO $ fix $ \ loop -> do
     task <- atomically $ readTBQueue taskQueue
     case task of
@@ -74,12 +75,17 @@ react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ 
           Right out -> do
             atomically (emit out)
             loop
-          Left err -> reportErr (Right err)
-      Nothing -> return ()
+          Left err -> do
+            reportErr (Right err)
+            tryPutMVar deathLockVar () $> ()
+      Nothing -> tryPutMVar deathLockVar () $> ()
   let
-    flow inp = Flow $ \ emit -> writeTBQueue taskQueue (Just (inp, emit))
-    newKillersState = atomically (writeTBQueue taskQueue Nothing) : killersState
-    in return (flow, newKillersState)
+    flow inp = Flow (\ emit -> writeTBQueue taskQueue (Just (inp, emit)))
+    kill = do
+      atomically (writeTBQueue taskQueue Nothing)
+      readMVar deathLockVar
+    newKillers = kill : priorKillers
+    in return (flow, newKillers)
 
 
 -- * Flow

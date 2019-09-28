@@ -36,7 +36,7 @@ spawn (Spawner reader) = do
     (Flow reg, flowKillers) <- runStateT (runReaderT reader (env, atomically . writeTQueue errChan)) []
 
     -- Register a callback, writing the result
-    reg $ \ out -> atomically $ writeTQueue outChan out
+    atomically $ reg $ \ out -> writeTQueue outChan out
 
     -- Block waiting for error or result:
     errOrRes <- atomically $ Right <$> peekTQueue outChan <|> Left <$> peekTQueue errChan
@@ -72,12 +72,12 @@ react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ 
         errOrOut <- Fx.uio $ runExceptT $ Fx.eio $ Fx.providerAndAccessor (pure env) $ step inp
         case errOrOut of
           Right out -> do
-            emit out
+            atomically (emit out)
             loop
           Left err -> reportErr (Right err)
       Nothing -> return ()
   let
-    flow inp = Flow $ \ emit -> atomically $ writeTBQueue taskQueue (Just (inp, emit))
+    flow inp = Flow $ \ emit -> writeTBQueue taskQueue (Just (inp, emit))
     newKillersState = atomically (writeTBQueue taskQueue Nothing) : killersState
     in return (flow, newKillersState)
 
@@ -98,28 +98,24 @@ newtype Flow a =
   The continuation action is lightweight aswell,
   it just gets executed on a different thread some time later on.
   -}
-  Flow ((a -> IO ()) -> IO ())
+  Flow ((a -> STM ()) -> STM ())
   deriving (Functor)
 
 instance Applicative Flow where
   pure a = Flow (\ emit -> emit a)
   (<*>) (Flow reg1) (Flow reg2) = Flow $ \ emit -> do
-    var1 <- newTVarIO Nothing
-    var2 <- newTVarIO Nothing
-    reg1 $ \ out1 -> join $ atomically $ do
+    var1 <- newTVar Nothing
+    var2 <- newTVar Nothing
+    reg1 $ \ out1 -> do
       state2 <- readTVar var2
       case state2 of
-        Just out2 -> return (emit (out1 out2))
-        Nothing -> do
-          writeTVar var1 (Just out1)
-          return (return ())
-    reg2 $ \ out2 -> join $ atomically $ do
+        Just out2 -> emit (out1 out2)
+        Nothing -> writeTVar var1 (Just out1)
+    reg2 $ \ out2 -> do
       state1 <- readTVar var1
       case state1 of
-        Just out1 -> return (emit (out1 out2))
-        Nothing -> do
-          writeTVar var2 (Just out2)
-          return (return ())
+        Just out1 -> emit (out1 out2)
+        Nothing -> writeTVar var2 (Just out2)
 
 instance Monad Flow where
   return = pure

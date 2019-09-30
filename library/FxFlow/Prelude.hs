@@ -112,9 +112,13 @@ import Data.Semigroup.Foldable as Exports
 import Data.Semigroup.Traversable as Exports
 import Data.Semigroupoid as Exports
 
+-- exceptionless
+-------------------------
+import Exceptionless as Exports (Eio, EioLifting(..))
+
 -- fx
 -------------------------
-import Fx as Exports (Uio, Eio, Provider, Accessor, Process)
+import Fx as Exports (Provider, Accessor)
 
 -- fx-streaming
 -------------------------

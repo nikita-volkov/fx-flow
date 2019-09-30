@@ -11,7 +11,9 @@ module FxFlow
 where
 
 import FxFlow.Prelude
+import qualified Exceptionless as Eio
 import qualified Fx
+import qualified FxStreaming.Accessor as Accessor
 import qualified FxStreaming.Producer as Producer
 
 
@@ -19,62 +21,40 @@ import qualified FxStreaming.Producer as Producer
 -------------------------
 
 spawn :: (SomeException -> err) -> Producer env err inp -> Spawner env err (inp -> Flow out) -> Producer env err out
-spawn someExceptionErr (Producer inpEio) (Spawner flowReader) = Producer $ \ env stopOut emitOut -> do
+spawn someExceptionErr (Producer inpProducerAccessor) (Spawner spawnerReader) = Producer $ \ emit -> do
 
-  result <- bimap1 someExceptionErr $ liftIO $ do
+  outChan <- liftEio (Eio.liftSafeIO newTQueueIO)
+  finishedVar <- liftEio (Eio.liftSafeIO (newTVarIO False))
+  errVar <- liftEio (Eio.liftSafeIO newEmptyTMVarIO)
 
-    outChan <- newTQueueIO
-    finishedVar <- newTVarIO False
-    errVar <- newEmptyTMVarIO
-    let reportErr = atomically . void . tryPutTMVar errVar
+  -- Spawn the flow workers:
+  (flowByInp, stopSignallers) <- let
+    reportErr = atomically . void . tryPutTMVar errVar
+    in
+      Fx.use $ \ env -> bimap1 someExceptionErr $
+      liftIO (runStateT (runReaderT spawnerReader (env, reportErr)) [])
 
-    -- Spawn all the flow workers:
-    (flowByInp, stopSignallers) <- runStateT (runReaderT flowReader (env, reportErr)) []
-
-    -- Spawn the producer:
-    forkIO $ do
-      producerResult <- let
-        stop = bimap1 someExceptionErr $ liftIO $ atomically (writeTVar finishedVar True)
-        emit inp = let
-          Flow reg = flowByInp inp
-          in do
-            pushingResult <- bimap1 someExceptionErr $ liftIO $ atomically $
-              (Just <$> readTMVar errVar) <|>
-              (Nothing <$ reg (writeTQueue outChan))
-            case pushingResult of
-              Just err -> throwError (either someExceptionErr id err)
-              Nothing -> return ()
-        in runExceptT (Fx.eio (inpEio env stop emit))
-      case producerResult of
-        Right () -> return ()
-        Left err -> reportErr (Right err)
-    return (outChan, finishedVar, errVar)
-
-    -- Feed the consumer:
-    fix $ \ loop -> join $ atomically $ asum $
-      [
-        do
-          err <- readTMVar errVar
-          return (return (Left (either someExceptionErr id err)))
-        ,
-        do
-          out <- readTQueue outChan
-          return $ do
-            emissionResult <- runExceptT $ Fx.eio $ emitOut out
-            case emissionResult of
-              Right () -> loop
-              Left err -> return (Left err)
-        ,
-        do
-          finished <- readTVar finishedVar
-          if finished
-            then return $ do
-              mconcat stopSignallers
-              runExceptT $ Fx.eio $ stopOut
-            else retry
-      ]
-
-  either throwError return result
+  -- Run producer in its own thread:
+  let
+    forked = inpProducerAccessor $ \ inp -> case flowByInp inp of
+      Flow reg -> bimap1 someExceptionErr $ liftIO $ atomically $ reg $ writeTQueue outChan
+    main =
+      (join . bimap1 someExceptionErr . liftIO . atomically . asum)
+        [
+          do
+            err <- readTMVar errVar
+            return (throwError (either someExceptionErr id err))
+          ,
+          do
+            out <- readTQueue outChan
+            return (emit out *> main)
+          ,
+          do
+            finished <- readTVar finishedVar
+            guard finished
+            return (bimap1 someExceptionErr (liftIO (mconcat stopSignallers)))
+        ]
+    in Fx.fork forked main
 
 
 -- * Spawner
@@ -98,7 +78,7 @@ react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ 
     task <- atomically $ readTBQueue taskQueue
     case task of
       Just (inp, emit) -> do
-        errOrOut <- Fx.uio $ runExceptT $ Fx.eio $ Fx.providerAndAccessor (pure env) $ step inp
+        errOrOut <- runExceptT $ liftEio $ Fx.provideAndAccess (pure env) $ step inp
         case errOrOut of
           Right out -> do
             atomically (emit out)

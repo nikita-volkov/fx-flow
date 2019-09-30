@@ -26,6 +26,7 @@ library
     FxFlow.Prelude
   build-depends:
     base,
+    exceptionless,
     fx,
     fx-streaming,
     mtl,

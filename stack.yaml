@@ -1,3 +1,5 @@
-resolver: https://raw.githubusercontent.com/metrix-ai/stack-snapshot/54/snapshot.yaml
+resolver: https://raw.githubusercontent.com/metrix-ai/stack-snapshot/54.2/snapshot.yaml
 extra-deps:
-- {git: "https://github.com/nikita-volkov/fx", commit: "495f29f2363dd13510804e26b74fd2e8781cedba"}
+- {git: "https://github.com/nikita-volkov/exceptionless", commit: "d64b63114df93699205ca339de8fef730e4ff75a"}
+- {git: "https://github.com/nikita-volkov/fx", commit: "f0ddfe7a3ce65937fe620838e2acb557675a135a"}
+- {git: "https://github.com/nikita-volkov/fx-streaming", commit: "df2d6009b7b06496af02f7fee040871c90b63f1e"}

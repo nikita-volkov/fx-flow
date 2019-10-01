@@ -119,23 +119,7 @@ newtype Flow a =
 
 instance Applicative Flow where
   pure a = Flow (\ emit -> emit a)
-  (<*>) (Flow reg1) (Flow reg2) = Flow $ \ emit -> do
-    var1 <- newTVarIO Nothing
-    var2 <- newTVarIO Nothing
-    reg1 $ \ out1 -> join $ atomically $ do
-      state2 <- readTVar var2
-      case state2 of
-        Just out2 -> return (emit (out1 out2))
-        Nothing -> do
-          writeTVar var1 (Just out1)
-          return (return ())
-    reg2 $ \ out2 -> join $ atomically $ do
-      state1 <- readTVar var1
-      case state1 of
-        Just out1 -> return (emit (out1 out2))
-        Nothing -> do
-          writeTVar var2 (Just out2)
-          return (return ())
+  (<*>) (Flow reg1) (Flow reg2) = Flow (\ emit -> reg1 (\ aToB -> reg2 (emit . aToB)))
 
 instance Monad Flow where
   return = pure

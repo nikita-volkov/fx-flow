@@ -1,9 +1,10 @@
 module FxFlow
 (
   -- * Accessor
-  spawn,
+  flow,
   -- * Spawner
   Spawner,
+  act,
   react,
   -- * Flow
   Flow,
@@ -20,77 +21,78 @@ import qualified FxStreaming.Producer as Producer
 -- * Producer
 -------------------------
 
-spawn :: (SomeException -> err) -> Producer env err inp -> Spawner env err (inp -> Flow out) -> Producer env err out
-spawn someExceptionErr (Producer inpProducerAccessor) (Spawner spawnerReader) = Producer $ \ emit -> do
+flow :: (SomeException -> err) -> Spawner env err (Flow out) -> Producer env err out
+flow excToErr (Spawner spawnerReader) = Producer $ \ emit -> do
 
-  outChan <- liftEio (Eio.liftSafeIO newTQueueIO)
   finishedVar <- liftEio (Eio.liftSafeIO (newTVarIO False))
   errVar <- liftEio (Eio.liftSafeIO newEmptyTMVarIO)
 
-  -- Spawn the flow workers:
-  (flowByInp, stopSignallers) <- let
-    reportErr = atomically . void . tryPutTMVar errVar
-    in
-      Fx.use $ \ env -> bimap1 someExceptionErr $
-      liftIO (runStateT (runReaderT spawnerReader (env, reportErr)) [])
+  let reportErr = atomically . void . tryPutTMVar errVar
 
-  -- Run producer in its own thread:
-  let
-    forked = inpProducerAccessor $ \ inp -> case flowByInp inp of
-      Flow reg -> bimap1 someExceptionErr $ liftIO $ atomically $ reg $ writeTQueue outChan
-    main =
-      (join . bimap1 someExceptionErr . liftIO . atomically . asum)
-        [
-          do
-            err <- readTMVar errVar
-            return (throwError (either someExceptionErr id err))
-          ,
-          do
-            out <- readTQueue outChan
-            return (emit out *> main)
-          ,
-          do
-            finished <- readTVar finishedVar
-            guard finished
-            return (bimap1 someExceptionErr (liftIO (mconcat stopSignallers)))
-        ]
-    in Fx.fork forked main
+  -- Spawn the flow workers:
+  (Flow flow, stopSignallers) <- 
+    Fx.use $ \ env -> bimap1 excToErr $
+    liftIO (runStateT (runReaderT spawnerReader (env, excToErr, reportErr)) [])
+
+  Fx.use $ \ env -> bimap1 excToErr $ liftIO $ flow $ \ out -> do
+    res <- runExceptT (liftEio (Fx.provideAndAccess (pure env) (emit out)))
+    case res of
+      Right True -> return ()
+      Right False -> atomically (writeTVar finishedVar True)
+      Left err -> reportErr err
+
+  (join . bimap1 excToErr . liftIO . atomically . asum)
+    [
+      do
+        err <- readTMVar errVar
+        return $ do
+          bimap1 excToErr (liftIO (mconcat stopSignallers))
+          throwError err
+      ,
+      do
+        finished <- readTVar finishedVar
+        guard finished
+        return (bimap1 excToErr (liftIO (mconcat stopSignallers)))
+    ]
+
+  return True
 
 
 -- * Spawner
 -------------------------
 
-{-|
-Context for spawning of actors.
--}
-newtype Spawner env err a = Spawner (ReaderT (env, Either SomeException err -> IO ()) (StateT [IO ()] IO) a)
+newtype Spawner env err a = Spawner (ReaderT (env, SomeException -> err, err -> IO ()) (StateT [IO ()] IO) a)
   deriving (Functor, Applicative, Monad)
 
-{-|
-Spawn a reactor with an input message buffer of size limited to the specified size,
-producing a flow, which outputs results.
--}
-react :: Int -> (inp -> Accessor env err out) -> Spawner env err (inp -> Flow out)
-react taskQueueSize step = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ priorKillers -> do
-  taskQueue <- newTBQueueIO (fromIntegral taskQueueSize)
+act :: Producer env err out -> Spawner env err (Flow out)
+act producer = fmap (\ flow -> flow ()) (react (const producer))
+
+react :: (inp -> Producer env err out) -> Spawner env err (inp -> Flow out)
+react inpToProducer = Spawner $ ReaderT $ \ (env, excToErr, reportErr) -> StateT $ \ priorKillers -> do
+
+  regChan <- newTBQueueIO 100
   deathLockVar <- newEmptyMVar
+
   forkIO $ fix $ \ loop -> do
-    task <- atomically $ readTBQueue taskQueue
-    case task of
-      Just (inp, emit) -> do
-        errOrOut <- runExceptT $ liftEio $ Fx.provideAndAccess (pure env) $ step inp
-        case errOrOut of
-          Right out -> do
-            atomically (emit out)
-            loop
-          Left err -> do
-            reportErr (Right err)
-            tryPutMVar deathLockVar () $> ()
-      Nothing -> tryPutMVar deathLockVar () $> ()
+    reg <- atomically $ readTBQueue regChan
+    case reg of
+      Just (inp, emit) -> let
+        Producer produce = inpToProducer inp
+        in do
+          producing <-
+            runExceptT $ liftEio $ Fx.provideAndAccess (pure env) $ produce $ \ out ->
+            bimap1 excToErr (liftIO (emit out $> True))
+          case producing of
+            Right _ -> loop
+            Left err -> do
+              reportErr err
+              putMVar deathLockVar ()
+      Nothing -> putMVar deathLockVar ()
+
   let
-    flow inp = Flow (\ emit -> writeTBQueue taskQueue (Just (inp, emit)))
+    flow inp = Flow (\ emit -> atomically (writeTBQueue regChan (Just (inp, emit))))
     kill = do
-      atomically (writeTBQueue taskQueue Nothing)
+      atomically (writeTBQueue regChan Nothing)
       readMVar deathLockVar
     newKillers = kill : priorKillers
     in return (flow, newKillers)
@@ -112,24 +114,28 @@ newtype Flow a =
   The continuation action is lightweight aswell,
   it just gets executed on a different thread some time later on.
   -}
-  Flow ((a -> STM ()) -> STM ())
+  Flow ((a -> IO ()) -> IO ())
   deriving (Functor)
 
 instance Applicative Flow where
   pure a = Flow (\ emit -> emit a)
   (<*>) (Flow reg1) (Flow reg2) = Flow $ \ emit -> do
-    var1 <- newTVar Nothing
-    var2 <- newTVar Nothing
-    reg1 $ \ out1 -> do
+    var1 <- newTVarIO Nothing
+    var2 <- newTVarIO Nothing
+    reg1 $ \ out1 -> join $ atomically $ do
       state2 <- readTVar var2
       case state2 of
-        Just out2 -> emit (out1 out2)
-        Nothing -> writeTVar var1 (Just out1)
-    reg2 $ \ out2 -> do
+        Just out2 -> return (emit (out1 out2))
+        Nothing -> do
+          writeTVar var1 (Just out1)
+          return (return ())
+    reg2 $ \ out2 -> join $ atomically $ do
       state1 <- readTVar var1
       case state1 of
-        Just out1 -> emit (out1 out2)
-        Nothing -> writeTVar var2 (Just out2)
+        Just out1 -> return (emit (out1 out2))
+        Nothing -> do
+          writeTVar var2 (Just out2)
+          return (return ())
 
 instance Monad Flow where
   return = pure

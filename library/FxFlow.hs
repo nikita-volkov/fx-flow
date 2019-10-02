@@ -30,9 +30,9 @@ flow excToErr (Spawner spawnerReader) = Producer $ \ emit -> do
   let reportErr = atomically . void . tryPutTMVar errVar
 
   -- Spawn the flow workers:
-  (Flow flow, stopSignallers) <- 
+  (Flow flow, (kill, block)) <- 
     Fx.use $ \ env -> bimap1 excToErr $
-    liftIO (runStateT (runReaderT spawnerReader (env, excToErr, reportErr)) [])
+    liftIO (runStateT (runReaderT spawnerReader (env, excToErr, reportErr)) (pure (), pure ()))
 
   Fx.use $ \ env -> bimap1 excToErr $ liftIO $ flow $ \ out -> do
     res <- runExceptT (liftEio (Fx.provideAndAccess (pure env) (emit out)))
@@ -46,13 +46,13 @@ flow excToErr (Spawner spawnerReader) = Producer $ \ emit -> do
       do
         err <- readTMVar errVar
         return $ do
-          bimap1 excToErr (liftIO (mconcat stopSignallers))
+          bimap1 excToErr (liftIO (kill *> block))
           throwError err
       ,
       do
         finished <- readTVar finishedVar
         guard finished
-        return (bimap1 excToErr (liftIO (mconcat stopSignallers)))
+        return (bimap1 excToErr (liftIO (kill *> block)))
     ]
 
   return True
@@ -61,14 +61,14 @@ flow excToErr (Spawner spawnerReader) = Producer $ \ emit -> do
 -- * Spawner
 -------------------------
 
-newtype Spawner env err a = Spawner (ReaderT (env, SomeException -> err, err -> IO ()) (StateT [IO ()] IO) a)
+newtype Spawner env err a = Spawner (ReaderT (env, SomeException -> err, err -> IO ()) (StateT (IO (), IO ()) IO) a)
   deriving (Functor, Applicative, Monad)
 
 act :: Producer env err out -> Spawner env err (Flow out)
 act producer = fmap (\ flow -> flow ()) (react (const producer))
 
 react :: (inp -> Producer env err out) -> Spawner env err (inp -> Flow out)
-react inpToProducer = Spawner $ ReaderT $ \ (env, excToErr, reportErr) -> StateT $ \ priorKillers -> do
+react inpToProducer = Spawner $ ReaderT $ \ (env, excToErr, reportErr) -> StateT $ \ (kill, block) -> do
 
   regChan <- newTBQueueIO 100
   deathLockVar <- newEmptyMVar
@@ -91,11 +91,9 @@ react inpToProducer = Spawner $ ReaderT $ \ (env, excToErr, reportErr) -> StateT
 
   let
     flow inp = Flow (\ emit -> atomically (writeTBQueue regChan (Just (inp, emit))))
-    kill = do
-      atomically (writeTBQueue regChan Nothing)
-      readMVar deathLockVar
-    newKillers = kill : priorKillers
-    in return (flow, newKillers)
+    newKill = kill *> atomically (writeTBQueue regChan Nothing)
+    newBlock = block *> readMVar deathLockVar
+    in return (flow, (newKill, newBlock))
 
 
 -- * Flow

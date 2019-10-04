@@ -8,6 +8,7 @@ module FxFlow
   react,
   -- * Flow
   Flow,
+  streamList,
 )
 where
 
@@ -118,3 +119,6 @@ instance Semigroup (Flow a) where
 instance Monoid (Flow a) where
   mempty = empty
   mappend = (<>)
+
+streamList :: [a] -> Flow a
+streamList list = Flow $ \ emit -> forM_ list emit

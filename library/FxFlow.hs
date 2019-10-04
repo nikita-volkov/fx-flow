@@ -111,3 +111,10 @@ instance Alternative Flow where
 instance MonadPlus Flow where
   mzero = empty
   mplus = (<|>)
+
+instance Semigroup (Flow a) where
+  (<>) = (<|>)
+
+instance Monoid (Flow a) where
+  mempty = empty
+  mappend = (<>)

@@ -28,7 +28,7 @@ library
     base,
     exceptionless,
     fx,
-    fx-streaming,
+    list-t,
     mtl,
     profunctors,
     semigroupoids,

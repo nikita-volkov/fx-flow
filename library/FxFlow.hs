@@ -1,7 +1,7 @@
 module FxFlow
 (
   -- * Accessor
-  flow,
+  flowForever,
   -- * Spawner
   Spawner,
   act,
@@ -14,79 +14,60 @@ where
 import FxFlow.Prelude
 import qualified Exceptionless as Eio
 import qualified Fx
-import qualified FxStreaming.Accessor as Accessor
-import qualified FxStreaming.Producer as Producer
 
 
 -- * Producer
 -------------------------
 
-flow :: (SomeException -> err) -> Spawner env err (Flow out) -> Producer env err out
-flow excToErr (Spawner spawnerReader) = Producer $ \ emit -> do
+flowStreaming :: Spawner env err (Flow a) -> ListT (Accessor env err) a
+flowStreaming (Spawner rdr) = error "TODO"
 
-  finishedVar <- liftEio (Eio.liftSafeIO (newTVarIO False))
+flowForever :: Spawner env err (Flow Void) -> Accessor env err Void
+flowForever (Spawner spawn) = do
+
   errVar <- liftEio (Eio.liftSafeIO newEmptyTMVarIO)
 
   let reportErr = atomically . void . tryPutTMVar errVar
 
-  -- Spawn the flow workers:
-  (Flow flow, (kill, block)) <- 
-    Fx.use $ \ env -> bimap1 excToErr $
-    liftIO (runStateT (runReaderT spawnerReader (env, excToErr, reportErr)) (pure (), pure ()))
+  (Flow flow, (kill, block)) <-
+    Fx.use $ \ env -> liftEio $ Eio.liftSafeIO $
+    runStateT (runReaderT spawn (env, reportErr)) (pure (), pure ())
 
-  Fx.use $ \ env -> bimap1 excToErr $ liftIO $ flow $ \ out -> do
-    res <- runExceptT (liftEio (Fx.provideAndAccess (pure env) (emit out)))
-    case res of
-      Right True -> return ()
-      Right False -> atomically (writeTVar finishedVar True)
-      Left err -> reportErr err
-
-  (join . bimap1 excToErr . liftIO . atomically . asum)
-    [
-      do
-        err <- readTMVar errVar
-        return $ do
-          bimap1 excToErr (liftIO (kill *> block))
-          throwError err
-      ,
-      do
-        finished <- readTVar finishedVar
-        guard finished
-        return (bimap1 excToErr (liftIO (kill *> block)))
-    ]
-
-  return True
+  err <- liftEio $ Eio.liftSafeIO $ atomically $ readTMVar errVar
+  liftEio $ Eio.liftSafeIO $ kill *> block
+  throwError err
 
 
 -- * Spawner
 -------------------------
 
-newtype Spawner env err a = Spawner (ReaderT (env, SomeException -> err, err -> IO ()) (StateT (IO (), IO ()) IO) a)
+newtype Spawner env err a = Spawner (ReaderT (env, err -> IO ()) (StateT (IO (), IO ()) IO) a)
   deriving (Functor, Applicative, Monad)
 
-act :: Producer env err out -> Spawner env err (Flow out)
-act producer = fmap (\ flow -> flow ()) (react (const producer))
+act :: ListT (Accessor env err) out -> Spawner env err (Flow out)
+act listT = fmap (\ flow -> flow ()) (react (const listT))
 
-react :: (inp -> Producer env err out) -> Spawner env err (inp -> Flow out)
-react inpToProducer = Spawner $ ReaderT $ \ (env, excToErr, reportErr) -> StateT $ \ (kill, block) -> do
+react :: (inp -> ListT (Accessor env err) out) -> Spawner env err (inp -> Flow out)
+react inpToListT = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ (kill, block) -> do
 
   regChan <- newTBQueueIO 100
   deathLockVar <- newEmptyMVar
 
   forkIO $ fix $ \ loop -> do
-    reg <- atomically $ readTBQueue regChan
-    case reg of
+    msg <- atomically $ readTBQueue regChan
+    case msg of
       Just (inp, emit) -> let
-        Producer produce = inpToProducer inp
-        in do
-          producing <-
-            runExceptT $ liftEio $ Fx.provideAndAccess (pure env) $ produce $ \ out ->
-            bimap1 excToErr (liftIO (emit out $> True))
-          case producing of
-            Right _ -> loop
+        eliminateListT (ListT accessor) = do
+          result <- runExceptT $ liftEio $ Fx.provideAndAccess (pure env) accessor
+          case result of
             Left err -> do
               reportErr err
               putMVar deathLockVar ()
+            Right (Just (out, nextListT)) -> do
+              emit out
+              eliminateListT nextListT
+            Right Nothing -> loop
+        in eliminateListT (inpToListT inp)
       Nothing -> putMVar deathLockVar ()
 
   let

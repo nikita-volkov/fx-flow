@@ -120,10 +120,6 @@ import Exceptionless as Exports (Eio, EioLifting(..))
 -------------------------
 import Fx as Exports (Provider, Accessor)
 
--- fx-streaming
--------------------------
-import FxStreaming.Producer as Exports (Producer(..))
-
 -- stm
 -------------------------
 import Control.Concurrent.STM as Exports
@@ -134,6 +130,9 @@ import Data.Profunctor.Unsafe as Exports
 import Data.Profunctor.Choice as Exports
 import Data.Profunctor.Strong as Exports
 
+-- list-t
+-------------------------
+import ListT as Exports (ListT(..))
 
 -- Synonyms for better naming
 -------------------------

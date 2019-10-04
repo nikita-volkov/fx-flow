@@ -22,7 +22,7 @@ import qualified Fx
 flowStreaming :: Spawner env err (Flow a) -> ListT (Accessor env err) a
 flowStreaming (Spawner rdr) = error "TODO"
 
-flowForever :: Spawner env err (Flow Void) -> Accessor env err Void
+flowForever :: Spawner env err (Flow ()) -> Accessor env err Void
 flowForever (Spawner spawn) = do
 
   errVar <- liftEio (Eio.liftSafeIO newEmptyTMVarIO)

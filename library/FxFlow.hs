@@ -1,6 +1,6 @@
 module FxFlow
 (
-  -- * Accessor
+  -- * Fx
   flowForever,
   -- * Spawner
   Spawner,
@@ -13,30 +13,29 @@ module FxFlow
 where
 
 import FxFlow.Prelude
-import qualified Exceptionless as Eio
 import qualified Fx
 
 
 -- * Producer
 -------------------------
 
-flowStreaming :: Spawner env err (Flow a) -> ListT (Accessor env err) a
+flowStreaming :: Spawner env err (Flow a) -> ListT (Fx env err) a
 flowStreaming (Spawner rdr) = error "TODO"
 
-flowForever :: Spawner env err (Flow ()) -> Accessor env err Void
+flowForever :: Spawner env err (Flow ()) -> Fx env err Void
 flowForever (Spawner spawn) = do
 
-  errVar <- liftEio (Eio.liftSafeIO newEmptyTMVarIO)
+  errVar <- Fx.runSafeIO newEmptyTMVarIO
 
   let reportErr = atomically . void . tryPutTMVar errVar
 
   (Flow flow, (kill, block)) <-
-    Fx.use $ \ env -> liftEio $ Eio.liftSafeIO $
+    Fx.handleEnv $ \ env -> Fx.runSafeIO $
     runStateT (runReaderT spawn (env, reportErr)) (pure (), pure ())
 
-  err <- liftEio $ Eio.liftSafeIO $ atomically $ readTMVar errVar
-  liftEio $ Eio.liftSafeIO $ kill *> block
-  throwError err
+  err <- Fx.runSafeIO $ atomically $ readTMVar errVar
+  Fx.runSafeIO $ kill *> block
+  throwErr err
 
 
 -- * Spawner
@@ -45,10 +44,10 @@ flowForever (Spawner spawn) = do
 newtype Spawner env err a = Spawner (ReaderT (env, err -> IO ()) (StateT (IO (), IO ()) IO) a)
   deriving (Functor, Applicative, Monad)
 
-act :: ListT (Accessor env err) out -> Spawner env err (Flow out)
+act :: ListT (Fx env err) out -> Spawner env err (Flow out)
 act listT = fmap (\ flow -> flow ()) (react (const listT))
 
-react :: (inp -> ListT (Accessor env err) out) -> Spawner env err (inp -> Flow out)
+react :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
 react inpToListT = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ (kill, block) -> do
 
   regChan <- newTBQueueIO 100
@@ -59,7 +58,7 @@ react inpToListT = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ (kill, b
     case msg of
       Just (inp, emit) -> let
         eliminateListT (ListT accessor) = do
-          result <- runExceptT $ liftEio $ Fx.provideAndAccess (pure env) accessor
+          result <- runExceptT $ runFx $ Fx.provideAndUse (pure env) accessor
           case result of
             Left err -> do
               reportErr err

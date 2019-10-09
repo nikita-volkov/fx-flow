@@ -90,35 +90,9 @@ import Control.Monad.Trans.Reader as Exports (Reader, runReader, mapReader, with
 import Control.Monad.Trans.State.Strict as Exports (State, runState, evalState, execState, mapState, withState, StateT(StateT), runStateT, evalStateT, execStateT, mapStateT, withStateT)
 import Control.Monad.Trans.Writer.Strict as Exports (Writer, runWriter, execWriter, mapWriter, WriterT(..), execWriterT, mapWriterT)
 
--- mtl
--------------------------
-import Control.Monad.Cont.Class as Exports
-import Control.Monad.Error.Class as Exports hiding (Error(..))
-import Control.Monad.Reader.Class as Exports
-import Control.Monad.State.Class as Exports
-import Control.Monad.Writer.Class as Exports
-
--- semigroupoids
--------------------------
-import Data.Bifunctor.Apply as Exports hiding (Bifunctor(..))
-import Data.Functor.Alt as Exports hiding (($>), many, some, optional)
-import Data.Functor.Apply as Exports hiding (($>))
-import Data.Functor.Bind as Exports hiding (join, ($>))
-import Data.Functor.Extend as Exports
-import Data.Functor.Plus as Exports hiding (($>), some, many, optional)
-import Data.Semigroup.Bifoldable as Exports
-import Data.Semigroup.Bitraversable as Exports
-import Data.Semigroup.Foldable as Exports
-import Data.Semigroup.Traversable as Exports
-import Data.Semigroupoid as Exports
-
--- exceptionless
--------------------------
-import Exceptionless as Exports (Eio, EioLifting(..))
-
 -- fx
 -------------------------
-import Fx as Exports (Provider, Accessor)
+import Fx as Exports (Provider, Fx, Future, Conc, FxRunning(..), ErrHandling(..), EnvMapping(..))
 
 -- stm
 -------------------------

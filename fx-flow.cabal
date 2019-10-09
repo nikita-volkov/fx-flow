@@ -26,11 +26,8 @@ library
     FxFlow.Prelude
   build-depends:
     base,
-    exceptionless,
     fx,
     list-t,
-    mtl,
     profunctors,
-    semigroupoids,
     stm,
     transformers

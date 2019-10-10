@@ -28,6 +28,5 @@ library
     base,
     fx,
     list-t,
-    profunctors,
     stm,
     transformers

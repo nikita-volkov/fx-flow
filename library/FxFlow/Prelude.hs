@@ -4,9 +4,6 @@ module FxFlow.Prelude
   map,
   bimap1,
   bimap2,
-  promap1,
-  promap2,
-  promap,
 )
 where
 
@@ -98,12 +95,6 @@ import Fx as Exports (Provider, Fx, Future, Conc, FxRunning(..), ErrHandling(..)
 -------------------------
 import Control.Concurrent.STM as Exports
 
--- profunctors
--------------------------
-import Data.Profunctor.Unsafe as Exports
-import Data.Profunctor.Choice as Exports
-import Data.Profunctor.Strong as Exports
-
 -- list-t
 -------------------------
 import ListT as Exports (ListT(..))
@@ -116,6 +107,3 @@ import qualified Data.Bifunctor as Bifunctor
 map = fmap
 bimap1 = Bifunctor.first
 bimap2 = Bifunctor.second
-promap1 = lmap
-promap2 = rmap
-promap = dimap

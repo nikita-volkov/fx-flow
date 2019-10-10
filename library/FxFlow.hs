@@ -25,16 +25,16 @@ flowStreaming (Spawner rdr) = error "TODO"
 flowForever :: Spawner env err (Flow ()) -> Fx env err Void
 flowForever (Spawner spawn) = do
 
-  errVar <- Fx.runSafeIO newEmptyTMVarIO
+  errVar <- Fx.runTotalIO newEmptyTMVarIO
 
   let reportErr = atomically . void . tryPutTMVar errVar
 
   (Flow flow, (kill, block)) <-
-    Fx.handleEnv $ \ env -> Fx.runSafeIO $
+    Fx.handleEnv $ \ env -> Fx.runTotalIO $
     runStateT (runReaderT spawn (env, reportErr)) (pure (), pure ())
 
-  err <- Fx.runSafeIO $ atomically $ readTMVar errVar
-  Fx.runSafeIO $ kill *> block
+  err <- Fx.runTotalIO $ atomically $ readTMVar errVar
+  Fx.runTotalIO $ kill *> block
   throwErr err
 
 

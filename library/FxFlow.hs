@@ -13,68 +13,61 @@ module FxFlow
 where
 
 import FxFlow.Prelude
-import qualified Fx
+import Fx
 
 
--- * Producer
+-- * Fx
 -------------------------
 
-flowStreaming :: Spawner env err (Flow a) -> ListT (Fx env err) a
-flowStreaming (Spawner rdr) = error "TODO"
-
-flowForever :: Spawner env err (Flow ()) -> Fx env err Void
-flowForever (Spawner spawn) = do
-
-  errVar <- Fx.runTotalIO newEmptyTMVarIO
-
-  let reportErr = atomically . void . tryPutTMVar errVar
-
-  (Flow flow, (kill, block)) <-
-    Fx.handleEnv $ \ env -> Fx.runTotalIO $
-    runStateT (runReaderT spawn (env, reportErr)) (pure (), pure ())
-
-  err <- Fx.runTotalIO $ atomically $ readTMVar errVar
-  Fx.runTotalIO $ kill *> block
-  throwErr err
+flowForever :: Spawner env err (Flow a) -> Fx env err Void
+flowForever (Spawner m) = do
+  (kill, waitingFuture) <- execStateT m (pure (), pure ())
+  wait waitingFuture
+  fail "Unexpectedly the flow has reached finish"
 
 
 -- * Spawner
 -------------------------
 
-newtype Spawner env err a = Spawner (ReaderT (env, err -> IO ()) (StateT (IO (), IO ()) IO) a)
+newtype Spawner env err a = Spawner (StateT (Fx env err (), Future env err ()) (Fx env err) a)
   deriving (Functor, Applicative, Monad)
 
 act :: ListT (Fx env err) out -> Spawner env err (Flow out)
 act listT = fmap (\ flow -> flow ()) (react (const listT))
 
+{-|
+Spawn an actor, which receives messages of type @inp@ and
+produces a finite stream of messages of type @out@,
+getting a handle on its message flow.
+-}
 react :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
-react inpToListT = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ (kill, block) -> do
+react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
-  regChan <- newTBQueueIO 100
-  deathLockVar <- newEmptyMVar
+  regChan <- runTotalIO (newTBQueueIO 100)
 
-  forkIO $ fix $ \ loop -> do
-    msg <- atomically $ readTBQueue regChan
+  future <- start $ fix $ \ processNextMessage -> do
+    msg <- runTotalIO $ atomically $ readTBQueue regChan
     case msg of
       Just (inp, emit) -> let
-        eliminateListT (ListT accessor) = do
-          result <- runExceptT $ runFx $ Fx.provideAndUse (pure env) accessor
-          case result of
-            Left err -> do
-              reportErr err
-              putMVar deathLockVar ()
-            Right (Just (out, nextListT)) -> do
-              emit out
+        eliminateListT (ListT step) = do
+          stepResult <- step
+          case stepResult of
+            Just (out, nextListT) -> do
+              mapEnv (const ()) (bimap1 absurd (emit out))
               eliminateListT nextListT
-            Right Nothing -> loop
+            Nothing -> processNextMessage
         in eliminateListT (inpToListT inp)
-      Nothing -> putMVar deathLockVar ()
+      Nothing -> return ()
 
   let
-    flow inp = Flow (\ emit -> atomically (writeTBQueue regChan (Just (inp, emit))))
-    newKill = kill *> atomically (writeTBQueue regChan Nothing)
-    newBlock = block *> readMVar deathLockVar
-    in return (flow, (newKill, newBlock))
+    flow inp = Flow (\ emit -> runTotalIO (atomically (writeTBQueue regChan (Just (inp, emit)))))
+    newCollectedKiller = do
+      collectedKiller
+      runTotalIO (atomically (writeTBQueue regChan Nothing))
+    newCollectedWaiter = do
+      collectedWaiter
+      future
+    in return (flow, (newCollectedKiller, newCollectedWaiter))
 
 
 -- * Flow
@@ -84,16 +77,7 @@ react inpToListT = Spawner $ ReaderT $ \ (env, reportErr) -> StateT $ \ (kill, b
 Actor communication network composition.
 Specifies the message flow between them.
 -}
-newtype Flow a =
-  {-|
-  Action registering a callback.
-
-  The idea is that the outer action is lightweight
-  it deals with composition and message registration.
-  The continuation action is lightweight aswell,
-  it just gets executed on a different thread some time later on.
-  -}
-  Flow ((a -> IO ()) -> IO ())
+newtype Flow a = Flow ((a -> Fx () Void ()) -> Fx () Void ())
   deriving (Functor)
 
 instance Applicative Flow where

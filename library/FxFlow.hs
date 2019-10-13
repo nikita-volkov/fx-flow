@@ -48,30 +48,32 @@ react :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
 react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
   regChan <- runTotalIO (newTBQueueIO 100)
+  aliveVar <- runTotalIO (newTVarIO True)
 
   future <- let
     listenToRegChan = do
-      msg <- runTotalIO $ atomically $ readTBQueue regChan
-      case msg of
-        Just (inp, stop, emit) -> let
-          eliminateListT (ListT step) = do
-            stepResult <- step
-            case stepResult of
-              Just (out, nextListT) -> do
-                mapEnv (const ()) (bimap1 absurd (emit out))
-                eliminateListT nextListT
-              Nothing -> do
-                mapEnv (const ()) (bimap1 absurd stop)
-                listenToRegChan
-          in eliminateListT (inpToListT inp)
-        Nothing -> return ()
+      (inp, stop, emit) <- runTotalIO $ atomically $ readTBQueue regChan
+      let
+        eliminateListT (ListT step) = do
+          alive <- runTotalIO (atomically (readTVar aliveVar))
+          if alive
+            then do
+              stepResult <- step
+              case stepResult of
+                Just (out, nextListT) -> do
+                  runFx (emit out)
+                  eliminateListT nextListT
+                Nothing -> do
+                  listenToRegChan
+            else runFx stop
+        in eliminateListT (inpToListT inp)
     in start listenToRegChan
 
   let
-    flow inp = Flow (\ stop emit -> runTotalIO (atomically (writeTBQueue regChan (Just (inp, stop, emit)))))
+    flow inp = Flow (\ stop emit -> runTotalIO (atomically (writeTBQueue regChan (inp, stop, emit))))
     newCollectedKiller = do
       collectedKiller
-      runTotalIO (atomically (writeTBQueue regChan Nothing))
+      runTotalIO (atomically (writeTVar aliveVar False))
     newCollectedWaiter = do
       collectedWaiter
       future

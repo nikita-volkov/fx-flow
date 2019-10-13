@@ -1,7 +1,7 @@
 module FxFlow
 (
   -- * Fx
-  flowForever,
+  flow,
   -- * Spawner
   Spawner,
   act,
@@ -19,19 +19,23 @@ import Fx
 -- * Fx
 -------------------------
 
-flowForever :: Spawner env err (Flow a) -> Fx env err Void
-flowForever (Spawner m) = do
-  (kill, waitingFuture) <- execStateT m (pure (), pure ())
+flow :: Spawner env err (Flow ()) -> Fx env err ()
+flow (Spawner spawn) = do
+  (Flow flow, (kill, waitingFuture)) <- runStateT spawn (pure (), pure ())
+  runFx (flow kill (const (return ())))
   wait waitingFuture
-  fail "Unexpectedly the flow has reached finish"
 
 
 -- * Spawner
 -------------------------
 
-newtype Spawner env err a = Spawner (StateT (Fx env err (), Future env err ()) (Fx env err) a)
-  deriving (Functor, Applicative, Monad)
+newtype Spawner env err a = Spawner (StateT (Fx () Void (), Future env err ()) (Fx env err) a)
+  deriving (Functor, Applicative, Monad, MonadFail)
 
+{-|
+Spawn a streaming channel,
+which does not rely on any input messages.
+-}
 act :: ListT (Fx env err) out -> Spawner env err (Flow out)
 act listT = fmap (\ flow -> flow ()) (react (const listT))
 
@@ -45,22 +49,26 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
   regChan <- runTotalIO (newTBQueueIO 100)
 
-  future <- start $ fix $ \ processNextMessage -> do
-    msg <- runTotalIO $ atomically $ readTBQueue regChan
-    case msg of
-      Just (inp, emit) -> let
-        eliminateListT (ListT step) = do
-          stepResult <- step
-          case stepResult of
-            Just (out, nextListT) -> do
-              mapEnv (const ()) (bimap1 absurd (emit out))
-              eliminateListT nextListT
-            Nothing -> processNextMessage
-        in eliminateListT (inpToListT inp)
-      Nothing -> return ()
+  future <- let
+    listenToRegChan = do
+      msg <- runTotalIO $ atomically $ readTBQueue regChan
+      case msg of
+        Just (inp, stop, emit) -> let
+          eliminateListT (ListT step) = do
+            stepResult <- step
+            case stepResult of
+              Just (out, nextListT) -> do
+                mapEnv (const ()) (bimap1 absurd (emit out))
+                eliminateListT nextListT
+              Nothing -> do
+                mapEnv (const ()) (bimap1 absurd stop)
+                listenToRegChan
+          in eliminateListT (inpToListT inp)
+        Nothing -> return ()
+    in start listenToRegChan
 
   let
-    flow inp = Flow (\ emit -> runTotalIO (atomically (writeTBQueue regChan (Just (inp, emit)))))
+    flow inp = Flow (\ stop emit -> runTotalIO (atomically (writeTBQueue regChan (Just (inp, stop, emit)))))
     newCollectedKiller = do
       collectedKiller
       runTotalIO (atomically (writeTBQueue regChan Nothing))
@@ -76,21 +84,23 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 {-|
 Actor communication network composition.
 Specifies the message flow between them.
+
+You can think of it as a channel.
 -}
-newtype Flow a = Flow ((a -> Fx () Void ()) -> Fx () Void ())
+newtype Flow a = Flow (Fx () Void () -> (a -> Fx () Void ()) -> Fx () Void ())
   deriving (Functor)
 
 instance Applicative Flow where
-  pure a = Flow (\ emit -> emit a)
-  (<*>) (Flow reg1) (Flow reg2) = Flow (\ emit -> reg1 (\ aToB -> reg2 (emit . aToB)))
+  pure a = Flow (\ stop emit -> emit a *> stop)
+  (<*>) (Flow reg1) (Flow reg2) = Flow (\ stop emit -> reg1 stop (\ aToB -> reg2 stop (emit . aToB)))
 
 instance Monad Flow where
   return = pure
-  (>>=) (Flow reg1) k2 = Flow $ \ emit -> reg1 $ k2 >>> \ (Flow reg2) -> reg2 emit
+  (>>=) (Flow reg1) k2 = Flow (\ stop emit -> reg1 stop (k2 >>> \ (Flow reg2) -> reg2 stop emit))
 
 instance Alternative Flow where
-  empty = Flow (\ emit -> return ())
-  (<|>) (Flow reg1) (Flow reg2) = Flow $ \ emit -> reg1 emit *> reg2 emit
+  empty = Flow (\ stop _ -> stop)
+  (<|>) (Flow reg1) (Flow reg2) = Flow (\ stop emit -> reg1 stop emit *> reg2 stop emit)
 
 instance MonadPlus Flow where
   mzero = empty
@@ -104,4 +114,15 @@ instance Monoid (Flow a) where
   mappend = (<>)
 
 streamList :: [a] -> Flow a
-streamList list = Flow $ \ emit -> forM_ list emit
+streamList list = Flow $ \ stop emit -> forM_ list emit *> stop
+
+streamListT :: ListT (Fx () Void) out -> Flow out
+streamListT listT = Flow $ \ stop emit -> let
+  eliminate (ListT step) = do
+    stepResult <- step
+    case stepResult of
+      Just (out, nextListT) -> do
+        emit out
+        eliminate nextListT
+      Nothing -> stop
+  in eliminate listT

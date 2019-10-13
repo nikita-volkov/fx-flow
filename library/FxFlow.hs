@@ -51,26 +51,31 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
   aliveVar <- runTotalIO (newTVarIO True)
 
   future <- let
-    listenToRegChan = do
-      (inp, stop, emit) <- runSTM $ do
-        alive <- readTVar aliveVar
-        guard alive
-        readTBQueue regChan
-      let
-        eliminateListT (ListT step) = do
-          alive <- runTotalIO (atomically (readTVar aliveVar))
-          if alive
-            then do
-              stepResult <- step
-              case stepResult of
-                Just (out, nextListT) -> do
-                  runFx (emit out)
-                  eliminateListT nextListT
-                Nothing -> do
-                  listenToRegChan
-            else runFx stop
-        in eliminateListT (inpToListT inp)
-    in start listenToRegChan
+    listenToChanges =
+      join $ runSTM $
+        (do
+          alive <- readTVar aliveVar
+          guard (not alive)
+          return (return ())
+        ) <|>
+        (do
+          (inp, stop, emit) <- readTBQueue regChan
+          return $ let
+            eliminateListT (ListT step) = do
+              alive <- runTotalIO (atomically (readTVar aliveVar))
+              if alive
+                then do
+                  stepResult <- step
+                  case stepResult of
+                    Just (out, nextListT) -> do
+                      runFx (emit out)
+                      eliminateListT nextListT
+                    Nothing -> do
+                      listenToChanges
+                else runFx stop
+            in eliminateListT (inpToListT inp)
+        )
+    in start listenToChanges
 
   let
     flow inp = Flow (\ stop emit -> runTotalIO (atomically (writeTBQueue regChan (inp, stop, emit))))

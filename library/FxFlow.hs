@@ -52,7 +52,10 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
   future <- let
     listenToRegChan = do
-      (inp, stop, emit) <- runTotalIO $ atomically $ readTBQueue regChan
+      (inp, stop, emit) <- runSTM $ do
+        alive <- readTVar aliveVar
+        guard alive
+        readTBQueue regChan
       let
         eliminateListT (ListT step) = do
           alive <- runTotalIO (atomically (readTVar aliveVar))

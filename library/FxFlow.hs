@@ -29,7 +29,7 @@ flow (Spawner spawn) = do
 -- * Spawner
 -------------------------
 
-newtype Spawner env err a = Spawner (StateT (Fx () Void (), Future env err ()) (Fx env err) a)
+newtype Spawner env err a = Spawner (StateT (Fx () Void (), Future err ()) (Fx env err) a)
   deriving (Functor, Applicative, Monad, MonadFail)
 
 {-|
@@ -71,6 +71,7 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
                       runFx (emit out)
                       eliminateListT nextListT
                     Nothing -> do
+                      runFx stop
                       listenToChanges
                 else runFx stop
             in eliminateListT (inpToListT inp)
@@ -82,9 +83,7 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
     newCollectedKiller = do
       collectedKiller
       runTotalIO (atomically (writeTVar aliveVar False))
-    newCollectedWaiter = do
-      collectedWaiter
-      future
+    newCollectedWaiter = collectedWaiter *> future
     in return (flow, (newCollectedKiller, newCollectedWaiter))
 
 

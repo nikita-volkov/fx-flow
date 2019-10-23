@@ -5,7 +5,8 @@ module FxFlow
   -- * Spawner
   Spawner,
   act,
-  react,
+  act1,
+  act2,
   -- * Flow
   Flow,
   streamList,
@@ -37,15 +38,15 @@ Spawn a streaming channel,
 which does not rely on any input messages.
 -}
 act :: ListT (Fx env err) out -> Spawner env err (Flow out)
-act listT = fmap (\ flow -> flow ()) (react (const listT))
+act listT = fmap (\ flow -> flow ()) (act1 (const listT))
 
 {-|
 Spawn an actor, which receives messages of type @inp@ and
 produces a finite stream of messages of type @out@,
 getting a handle on its message flow.
 -}
-react :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
-react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
+act1 :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
+act1 inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
   regChan <- runTotalIO (newTBQueueIO 100)
   aliveVar <- runTotalIO (newTVarIO True)
@@ -85,6 +86,9 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
       writeTVar aliveVar False
     newCollectedWaiter = collectedWaiter *> future
     in return (flow, (newCollectedKiller, newCollectedWaiter))
+
+act2 :: (a -> b -> ListT (Fx env err) out) -> Spawner env err (a -> b -> Flow out)
+act2 genFn = fmap curry (act1 (uncurry genFn))
 
 
 -- * Flow

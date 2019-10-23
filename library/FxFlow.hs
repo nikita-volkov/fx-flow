@@ -19,11 +19,11 @@ import Fx
 -- * Fx
 -------------------------
 
-flow :: Spawner env err (Flow ()) -> Fx env err ()
+flow :: Spawner env err (Flow ()) -> Fx env err (Future err ())
 flow (Spawner spawn) = do
   (Flow flow, (kill, waitingFuture)) <- runStateT spawn (pure (), pure ())
   runSTM (flow kill (const (return ())))
-  wait waitingFuture
+  return waitingFuture
 
 
 -- * Spawner

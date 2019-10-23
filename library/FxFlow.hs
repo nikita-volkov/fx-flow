@@ -22,14 +22,14 @@ import Fx
 flow :: Spawner env err (Flow ()) -> Fx env err ()
 flow (Spawner spawn) = do
   (Flow flow, (kill, waitingFuture)) <- runStateT spawn (pure (), pure ())
-  runFx (flow kill (const (return ())))
+  runSTM (flow kill (const (return ())))
   wait waitingFuture
 
 
 -- * Spawner
 -------------------------
 
-newtype Spawner env err a = Spawner (StateT (Fx () Void (), Future err ()) (Fx env err) a)
+newtype Spawner env err a = Spawner (StateT (STM (), Future err ()) (Fx env err) a)
   deriving (Functor, Applicative, Monad, MonadFail)
 
 {-|
@@ -62,27 +62,27 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
           (inp, stop, emit) <- readTBQueue regChan
           return $ let
             eliminateListT (ListT step) = do
-              alive <- runTotalIO (atomically (readTVar aliveVar))
+              alive <- runSTM (readTVar aliveVar)
               if alive
                 then do
                   stepResult <- step
                   case stepResult of
                     Just (out, nextListT) -> do
-                      runFx (emit out)
+                      runSTM (emit out)
                       eliminateListT nextListT
                     Nothing -> do
-                      runFx stop
+                      runSTM stop
                       listenToChanges
-                else runFx stop
+                else runSTM stop
             in eliminateListT (inpToListT inp)
         )
     in start listenToChanges
 
   let
-    flow inp = Flow (\ stop emit -> runTotalIO (atomically (writeTBQueue regChan (inp, stop, emit))))
+    flow inp = Flow (\ stop emit -> writeTBQueue regChan (inp, stop, emit))
     newCollectedKiller = do
       collectedKiller
-      runTotalIO (atomically (writeTVar aliveVar False))
+      writeTVar aliveVar False
     newCollectedWaiter = collectedWaiter *> future
     in return (flow, (newCollectedKiller, newCollectedWaiter))
 
@@ -96,20 +96,59 @@ Specifies the message flow between them.
 
 You can think of it as a channel.
 -}
-newtype Flow a = Flow (Fx () Void () -> (a -> Fx () Void ()) -> Fx () Void ())
+newtype Flow a = Flow (STM () -> (a -> STM ()) -> STM ())
   deriving (Functor)
 
 instance Applicative Flow where
   pure a = Flow (\ stop emit -> emit a *> stop)
-  (<*>) (Flow reg1) (Flow reg2) = Flow (\ stop emit -> reg1 stop (\ aToB -> reg2 stop (emit . aToB)))
+  (<*>) (Flow reg1) (Flow reg2) = Flow $ \ stop emit -> do
+    stoppedVar1 <- newTVar False
+    stoppedVar2 <- newTVar False
+    let
+      stop1 = do
+        stopped2 <- readTVar stoppedVar2
+        if stopped2
+          then stop
+          else writeTVar stoppedVar1 True
+      stop2 = do
+        stopped1 <- readTVar stoppedVar1
+        if stopped1
+          then stop
+          else writeTVar stoppedVar2 True
+      in reg1 stop1 (\ aToB -> reg2 stop2 (emit . aToB))
 
 instance Monad Flow where
   return = pure
-  (>>=) (Flow reg1) k2 = Flow (\ stop emit -> reg1 stop (k2 >>> \ (Flow reg2) -> reg2 stop emit))
+  (>>=) (Flow reg1) k2 = Flow $ \ stop emit -> do
+    unregisteredVar <- newTVar False
+    let
+      stop1 = writeTVar unregisteredVar True
+      emit1 a = case k2 a of
+        Flow reg2 -> reg2 stop2 emit
+      stop2 = do
+        unregistered <- readTVar unregisteredVar
+        if unregistered
+          then stop
+          else return ()
+      in reg1 stop1 emit1
 
 instance Alternative Flow where
   empty = Flow (\ stop _ -> stop)
-  (<|>) (Flow reg1) (Flow reg2) = Flow (\ stop emit -> reg1 stop emit *> reg2 stop emit)
+  (<|>) (Flow reg1) (Flow reg2) = Flow $ \ stop emit -> do
+    stoppedVar1 <- newTVar False
+    stoppedVar2 <- newTVar False
+    let
+      stop1 = do
+        stopped2 <- readTVar stoppedVar2
+        if stopped2
+          then stop
+          else writeTVar stoppedVar1 True
+      stop2 = do
+        stopped1 <- readTVar stoppedVar1
+        if stopped1
+          then stop
+          else writeTVar stoppedVar2 True
+      in reg1 stop1 emit *> reg2 stop2 emit
 
 instance MonadPlus Flow where
   mzero = empty
@@ -124,14 +163,3 @@ instance Monoid (Flow a) where
 
 streamList :: [a] -> Flow a
 streamList list = Flow $ \ stop emit -> forM_ list emit *> stop
-
-streamListT :: ListT (Fx () Void) out -> Flow out
-streamListT listT = Flow $ \ stop emit -> let
-  eliminate (ListT step) = do
-    stepResult <- step
-    case stepResult of
-      Just (out, nextListT) -> do
-        emit out
-        eliminate nextListT
-      Nothing -> stop
-  in eliminate listT

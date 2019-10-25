@@ -7,6 +7,7 @@ module FxFlow
   react,
   ditchInput,
   distribute,
+  pool,
   -- * Flow
   Flow,
   streamList,
@@ -99,6 +100,25 @@ distribute spawnerList = if null spawnerList
         _ -> do
           writeTVar indexVar 1
           runFlow (Vector.unsafeIndex flowFnVec 0 inp) stop emit
+
+pool :: Word -> Spawner env err (a -> Flow b) -> Spawner env err (a -> Flow b)
+pool poolSize spawner = if poolSize == 0
+  then return (const empty)
+  else do
+    flowFnQueue <- do
+      flowFnList <- replicateM (fromIntegral poolSize) spawner
+      Spawner $ lift $ runSTM $ do
+        queue <- newTQueue
+        traverse_ (writeTQueue queue) flowFnList
+        return queue
+    return $ \ inp -> Flow $ \ stop emit -> do
+      flowFn <- readTQueue flowFnQueue
+      runFlow (flowFn inp)
+        (do
+          stop
+          writeTQueue flowFnQueue flowFn
+        )
+        emit
 
 
 -- * Flow

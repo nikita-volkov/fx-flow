@@ -7,6 +7,7 @@ module FxFlow
   act,
   act1,
   act2,
+  distribute,
   -- * Flow
   Flow,
   streamList,
@@ -89,6 +90,21 @@ act1 inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
 act2 :: (a -> b -> ListT (Fx env err) out) -> Spawner env err (a -> b -> Flow out)
 act2 genFn = fmap curry (act1 (uncurry genFn))
+
+distribute :: Spawner env err ([Flow a] -> Flow a)
+distribute = do
+  indexVar <- Spawner $ lift $ runTotalIO $ newIORef 0
+  fmap (fmap join) $ act1 $ \ flowList -> do
+    index <- lift $ runTotalIO $ readIORef indexVar
+    case drop index flowList of
+      flow : _ -> do
+        lift $ runTotalIO $ writeIORef indexVar $! succ index
+        return flow
+      _ -> case flowList of
+        flow : _ -> do
+          lift $ runTotalIO $ writeIORef indexVar 1
+          return flow
+        _ -> return empty
 
 
 -- * Flow

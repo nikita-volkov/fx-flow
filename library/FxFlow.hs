@@ -95,10 +95,10 @@ distribute spawnerList = if null spawnerList
       case flowFnVec Vector.!? index of
         Just flowFn -> do
           writeTVar indexVar $! succ index
-          case flowFn inp of Flow flowImp -> flowImp stop emit
+          runFlow (flowFn inp) stop emit
         _ -> do
           writeTVar indexVar 1
-          case Vector.unsafeIndex flowFnVec 0 inp of Flow flowImp -> flowImp stop emit
+          runFlow (Vector.unsafeIndex flowFnVec 0 inp) stop emit
 
 
 -- * Flow
@@ -110,7 +110,7 @@ Specifies the message flow between them.
 
 You can think of it as a channel.
 -}
-newtype Flow a = Flow (STM () -> (a -> STM ()) -> STM ())
+newtype Flow a = Flow { runFlow :: STM () -> (a -> STM ()) -> STM () }
   deriving (Functor)
 
 instance Applicative Flow where

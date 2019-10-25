@@ -5,8 +5,7 @@ module FxFlow
   -- * Spawner
   Spawner,
   act,
-  act1,
-  act2,
+  react,
   distribute,
   -- * Flow
   Flow,
@@ -16,6 +15,7 @@ where
 
 import FxFlow.Prelude
 import Fx
+import qualified Data.Vector as Vector
 
 
 -- * Fx
@@ -39,15 +39,15 @@ Spawn a streaming channel,
 which does not rely on any input messages.
 -}
 act :: ListT (Fx env err) out -> Spawner env err (Flow out)
-act listT = fmap (\ flow -> flow ()) (act1 (const listT))
+act listT = fmap (\ flow -> flow ()) (react (const listT))
 
 {-|
 Spawn an actor, which receives messages of type @inp@ and
 produces a finite stream of messages of type @out@,
 getting a handle on its message flow.
 -}
-act1 :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
-act1 inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
+react :: (inp -> ListT (Fx env err) out) -> Spawner env err (inp -> Flow out)
+react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
 
   regChan <- runTotalIO (newTBQueueIO 100)
   aliveVar <- runTotalIO (newTVarIO True)
@@ -88,23 +88,21 @@ act1 inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
     newCollectedWaiter = collectedWaiter *> future
     in return (flow, (newCollectedKiller, newCollectedWaiter))
 
-act2 :: (a -> b -> ListT (Fx env err) out) -> Spawner env err (a -> b -> Flow out)
-act2 genFn = fmap curry (act1 (uncurry genFn))
-
-distribute :: Spawner env err ([Flow a] -> Flow a)
-distribute = do
-  indexVar <- Spawner $ lift $ runTotalIO $ newIORef 0
-  fmap (fmap join) $ act1 $ \ flowList -> do
-    index <- lift $ runTotalIO $ readIORef indexVar
-    case drop index flowList of
-      flow : _ -> do
-        lift $ runTotalIO $ writeIORef indexVar $! succ index
-        return flow
-      _ -> case flowList of
-        flow : _ -> do
-          lift $ runTotalIO $ writeIORef indexVar 1
-          return flow
-        _ -> return empty
+distribute :: [Spawner env err (a -> Flow b)] -> Spawner env err (a -> Flow b)
+distribute spawnerList = if null spawnerList
+  then return $ const empty
+  else do
+    indexVar <- Spawner $ lift $ runSTM $ newTVar 0
+    flowFnVec <- sequence $ Vector.fromList spawnerList
+    return $ \ inp -> Flow $ \ stop emit -> do
+      index <- readTVar indexVar
+      case flowFnVec Vector.!? index of
+        Just flowFn -> do
+          writeTVar indexVar $! succ index
+          case flowFn inp of Flow flowImp -> flowImp stop emit
+        _ -> do
+          writeTVar indexVar 1
+          case Vector.unsafeIndex flowFnVec 0 inp of Flow flowImp -> flowImp stop emit
 
 
 -- * Flow

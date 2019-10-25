@@ -29,4 +29,5 @@ library
     fx,
     list-t,
     stm,
-    transformers
+    transformers,
+    vector

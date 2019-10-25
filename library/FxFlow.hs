@@ -4,8 +4,8 @@ module FxFlow
   flow,
   -- * Spawner
   Spawner,
-  act,
   react,
+  ditchInput,
   distribute,
   -- * Flow
   Flow,
@@ -33,13 +33,6 @@ flow (Spawner spawn) = do
 
 newtype Spawner env err a = Spawner (StateT (STM (), Future err ()) (Fx env err) a)
   deriving (Functor, Applicative, Monad, MonadFail)
-
-{-|
-Spawn a streaming channel,
-which does not rely on any input messages.
--}
-act :: ListT (Fx env err) out -> Spawner env err (Flow out)
-act listT = fmap (\ flow -> flow ()) (react (const listT))
 
 {-|
 Spawn an actor, which receives messages of type @inp@ and
@@ -87,6 +80,9 @@ react inpToListT = Spawner $ StateT $ \ (collectedKiller, collectedWaiter) -> do
       writeTVar aliveVar False
     newCollectedWaiter = collectedWaiter *> future
     in return (flow, (newCollectedKiller, newCollectedWaiter))
+
+ditchInput :: Spawner env err (() -> Flow a) -> Spawner env err (Flow a)
+ditchInput = fmap (\ flow -> flow ())
 
 distribute :: [Spawner env err (a -> Flow b)] -> Spawner env err (a -> Flow b)
 distribute spawnerList = if null spawnerList

@@ -35,6 +35,9 @@ flow (Spawner spawn) = do
 newtype Spawner env err a = Spawner (StateT (STM (), Future err ()) (Fx env err) a)
   deriving (Functor, Applicative, Monad, MonadFail)
 
+instance FxRunning env err (Spawner env err) where
+  runFx = Spawner . lift
+
 {-|
 Spawn an actor, which receives messages of type @inp@ and
 produces a finite stream of messages of type @out@,
